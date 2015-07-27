@@ -25,13 +25,6 @@ class AtmosphericMedium : public Medium
 
     Vec3f _pos;
     float _scale;
-    float _cloudMinR;
-    float _cloudMaxR;
-    float _cloudDensity;
-    float _cloudAlbedo;
-    float _cloudShift;
-    Vec3f _backgroundSigmaS;
-    std::shared_ptr<Texture> _cloudThickness;
 
     Vec3f _sigmaS;
     float _rG;
@@ -42,12 +35,8 @@ class AtmosphericMedium : public Medium
 
     inline Vec2f densityAndDerivative(float r, float mu, float t, float d) const;
 
-    bool useCloudDensity(const Vec3f &q, float d) const;
-    bool insideClouds(const Vec3f &p) const;
+    void sampleColorChannel(PathSampleGenerator &sampler, MediumState &state, MediumSample &sample) const;
 
-    void sampleColorChannel(VolumeScatterEvent &event, MediumState &state) const;
-
-    Vec4f spectralOpticalDepthAndT(const Vec3f &p, const Vec3f &w, float maxT, float targetDepth, int targetChannel, float rand) const;
     Vec2f opticalDepthAndT(const Vec3f &p, const Vec3f &w, float maxT, float targetDepth) const;
 
 public:
@@ -59,15 +48,11 @@ public:
     virtual bool isHomogeneous() const override;
 
     virtual void prepareForRender() override;
-    virtual void teardownAfterRender() override;
 
-    virtual bool sampleDistance(VolumeScatterEvent &event, MediumState &state) const override;
-    virtual bool absorb(VolumeScatterEvent &event, MediumState &state) const override;
-    virtual bool scatter(VolumeScatterEvent &event) const override;
-    virtual Vec3f transmittance(const VolumeScatterEvent &event) const override;
-    virtual Vec3f emission(const VolumeScatterEvent &event) const override;
-
-    virtual Vec3f phaseEval(const VolumeScatterEvent &event) const override;
+    virtual bool sampleDistance(PathSampleGenerator &sampler, const Ray &ray,
+            MediumState &state, MediumSample &sample) const override;
+    virtual Vec3f transmittance(const Ray &ray) const override;
+    virtual float pdf(const Ray &ray, bool onSurface) const override;
 };
 
 }

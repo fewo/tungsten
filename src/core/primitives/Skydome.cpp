@@ -1,8 +1,10 @@
 #include "Skydome.hpp"
 #include "TriangleMesh.hpp"
 
-#include "sampling/SampleGenerator.hpp"
+#include "sampling/PathSampleGenerator.hpp"
 #include "sampling/SampleWarp.hpp"
+
+#include "bsdfs/NullBsdf.hpp"
 
 #include "math/Spectral.hpp"
 #include "math/Angle.hpp"
@@ -56,8 +58,14 @@ Vec3f Skydome::uvToDirection(Vec2f uv, float &sinTheta) const
 
 void Skydome::buildProxy()
 {
-    _proxy = std::make_shared<TriangleMesh>(std::vector<Vertex>(), std::vector<TriangleI>(), _bsdf, "Sphere", false, false);
+    _proxy = std::make_shared<TriangleMesh>(std::vector<Vertex>(), std::vector<TriangleI>(),
+            std::make_shared<NullBsdf>(), "Sphere", false, false);
     _proxy->makeCone(0.05f, 1.0f);
+}
+
+float Skydome::powerToRadianceFactor() const
+{
+    return INV_FOUR_PI;
 }
 
 void Skydome::fromJson(const rapidjson::Value &v, const Scene &scene)
@@ -70,8 +78,6 @@ void Skydome::fromJson(const rapidjson::Value &v, const Scene &scene)
     JsonUtils::fromJson(v, "turbidity", _turbidity);
     JsonUtils::fromJson(v, "intensity", _intensity);
     JsonUtils::fromJson(v, "sample", _doSample);
-
-    _bsdf = scene.fetchBsdf(JsonUtils::fetchMember(v, "bsdf"));
 }
 rapidjson::Value Skydome::toJson(Allocator &allocator) const
 {
@@ -82,8 +88,6 @@ rapidjson::Value Skydome::toJson(Allocator &allocator) const
     v.AddMember("turbidity", _turbidity, allocator);
     v.AddMember("intensity", _intensity, allocator);
     v.AddMember("sample", _doSample, allocator);
-
-    JsonUtils::addObjectMember(v, "bsdf", *_bsdf, allocator);
 
     return std::move(v);
 }
@@ -114,6 +118,7 @@ void Skydome::intersectionInfo(const IntersectionTemporary &data, IntersectionIn
     info.p = isect->p;
     info.uv = directionToUV(isect->w);
     info.primitive = this;
+    info.bsdf = nullptr;
 }
 
 bool Skydome::tangentSpace(const IntersectionTemporary &/*data*/, const IntersectionInfo &/*info*/,
@@ -127,13 +132,66 @@ bool Skydome::isSamplable() const
     return _doSample;
 }
 
-void Skydome::makeSamplable(uint32 /*threadIndex*/)
+void Skydome::makeSamplable(const TraceableScene &scene, uint32 /*threadIndex*/)
 {
     _sky->makeSamplable(MAP_SPHERICAL);
+    _sceneBounds = scene.bounds();
+    _sceneBounds.grow(1e-2f);
 }
 
-float Skydome::inboundPdf(uint32 /*threadIndex*/, const IntersectionTemporary &data,
-        const IntersectionInfo &/*info*/, const Vec3f &/*p*/, const Vec3f &/*d*/) const
+bool Skydome::samplePosition(PathSampleGenerator &sampler, PositionSample &sample) const
+{
+    float faceXi = sampler.next1D(EmitterSample);
+    Vec2f xi = sampler.next2D(EmitterSample);
+
+    sample.uv = _sky->sample(MAP_SPHERICAL, sampler.next2D(EmitterSample));
+    float sinTheta;
+    sample.Ng = -uvToDirection(sample.uv, sinTheta);
+
+    sample.p = SampleWarp::projectedBox(_sceneBounds, sample.Ng, faceXi, xi);
+    sample.pdf = SampleWarp::projectedBoxPdf(_sceneBounds, sample.Ng);
+    sample.weight = Vec3f(1.0f/sample.pdf);
+
+    return true;
+}
+
+bool Skydome::sampleDirection(PathSampleGenerator &/*sampler*/, const PositionSample &point, DirectionSample &sample) const
+{
+    sample.d = point.Ng;
+    float sinTheta;
+    directionToUV(-point.Ng, sinTheta);
+    sample.pdf = INV_PI*INV_TWO_PI*_sky->pdf(MAP_SPHERICAL, point.uv)/sinTheta;
+    if (sample.pdf == 0.0f)
+        return false;
+    sample.weight = (*_sky)[point.uv]/sample.pdf;
+
+    return true;
+}
+
+bool Skydome::sampleDirect(uint32 /*threadIndex*/, const Vec3f &/*p*/, PathSampleGenerator &sampler, LightSample &sample) const
+{
+    Vec2f uv = _sky->sample(MAP_SPHERICAL, sampler.next2D(EmitterSample));
+    float sinTheta;
+    sample.d = uvToDirection(uv, sinTheta);
+    sample.pdf = INV_PI*INV_TWO_PI*_sky->pdf(MAP_SPHERICAL, uv)/sinTheta;
+    sample.dist = Ray::infinity();
+    return sample.pdf != 0.0f;
+}
+
+float Skydome::positionalPdf(const PositionSample &point) const
+{
+    return SampleWarp::projectedBoxPdf(_sceneBounds, point.Ng);
+}
+
+float Skydome::directionalPdf(const PositionSample &point, const DirectionSample &/*sample*/) const
+{
+    float sinTheta;
+    directionToUV(-point.Ng, sinTheta);
+    return INV_PI*INV_TWO_PI*_sky->pdf(MAP_SPHERICAL, point.uv)/sinTheta;
+}
+
+float Skydome::directPdf(uint32 /*threadIndex*/, const IntersectionTemporary &data,
+        const IntersectionInfo &/*info*/, const Vec3f &/*p*/) const
 {
     const SkydomeIntersection *isect = data.as<SkydomeIntersection>();
     float sinTheta;
@@ -141,19 +199,19 @@ float Skydome::inboundPdf(uint32 /*threadIndex*/, const IntersectionTemporary &d
     return INV_PI*INV_TWO_PI*_sky->pdf(MAP_SPHERICAL, uv)/sinTheta;
 }
 
-bool Skydome::sampleInboundDirection(uint32 /*threadIndex*/, LightSample &sample) const
+Vec3f Skydome::evalPositionalEmission(const PositionSample &/*sample*/) const
 {
-    Vec2f uv = _sky->sample(MAP_SPHERICAL, sample.sampler->next2D());
-    float sinTheta;
-    sample.d = uvToDirection(uv, sinTheta);
-    sample.pdf = INV_PI*INV_TWO_PI*_sky->pdf(MAP_SPHERICAL, uv)/sinTheta;
-    sample.dist = 1e30f;
-    return true;
+    return Vec3f(1.0f);
 }
 
-bool Skydome::sampleOutboundDirection(uint32 /*threadIndex*/, LightSample &/*sample*/) const
+Vec3f Skydome::evalDirectionalEmission(const PositionSample &point, const DirectionSample &/*sample*/) const
 {
-    return false;
+    return (*_sky)[point.uv];
+}
+
+Vec3f Skydome::evalDirect(const IntersectionTemporary &/*data*/, const IntersectionInfo &info) const
+{
+    return (*_sky)[info.uv];
 }
 
 bool Skydome::invertParametrization(Vec2f /*uv*/, Vec3f &/*pos*/) const
@@ -161,7 +219,7 @@ bool Skydome::invertParametrization(Vec2f /*uv*/, Vec3f &/*pos*/) const
     return false;
 }
 
-bool Skydome::isDelta() const
+bool Skydome::isDirac() const
 {
     return false;
 }
@@ -198,7 +256,7 @@ static void fillImage(ArHosekSkyModelState *state, float *lambdas, Vec3f *weight
         float theta = (y + 0.5f)*PI/SizeY;
         for (int x = 0; x < SizeX; ++x) {
             float phi = (x + 0.5f)*TWO_PI/SizeX;
-            Vec3f v(std::cos(phi)*std::sin(theta), std::cos(theta), std::sin(phi)*std::sin(theta));
+            Vec3f v = Vec3f(std::cos(phi)*std::sin(theta), std::cos(theta), std::sin(phi)*std::sin(theta));
             float gamma = clamp(std::acos(clamp(v.dot(sun), -1.0f, 1.0f))*gammaScale, 0.0f, PI);
 
             Vec3f xyz(0.0f);
@@ -233,27 +291,30 @@ void Skydome::prepareForRender()
 
     _sky = std::make_shared<BitmapTexture>(img.release(), SizeX, SizeY, BitmapTexture::TexelType::RGB_HDR, true, false);
     _emission = _sky;
+
+    Primitive::prepareForRender();
 }
 
 void Skydome::teardownAfterRender()
 {
     _sky.reset();
     _emission.reset();
+
+    Primitive::teardownAfterRender();
 }
 
 int Skydome::numBsdfs() const
 {
-    return 1;
+    return 0;
 }
 
 std::shared_ptr<Bsdf> &Skydome::bsdf(int /*index*/)
 {
-    return _bsdf;
+    FAIL("Skydome::bsdf should not be called");
 }
 
-void Skydome::setBsdf(int /*index*/, std::shared_ptr<Bsdf> &bsdf)
+void Skydome::setBsdf(int /*index*/, std::shared_ptr<Bsdf> &/*bsdf*/)
 {
-    _bsdf = bsdf;
 }
 
 Primitive *Skydome::clone()

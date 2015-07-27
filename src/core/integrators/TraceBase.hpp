@@ -4,11 +4,12 @@
 #include "TraceSettings.hpp"
 
 #include "samplerecords/SurfaceScatterEvent.hpp"
-#include "samplerecords/VolumeScatterEvent.hpp"
+#include "samplerecords/MediumSample.hpp"
 #include "samplerecords/LightSample.hpp"
 
-#include "sampling/SampleGenerator.hpp"
+#include "sampling/PathSampleGenerator.hpp"
 #include "sampling/UniformSampler.hpp"
+#include "sampling/Distribution1D.hpp"
 #include "sampling/SampleWarp.hpp"
 
 #include "renderer/TraceableScene.hpp"
@@ -31,26 +32,29 @@ namespace Tungsten {
 
 class TraceBase
 {
-    static CONSTEXPR bool GeneralizedShadowRays = true;
-
 protected:
     const TraceableScene *_scene;
     TraceSettings _settings;
     uint32 _threadId;
 
+    // For computing direct lighting probabilities
     std::vector<float> _lightPdf;
+    // For sampling light sources in adjoint light tracing
+    std::unique_ptr<Distribution1D> _lightSampler;
 
     TraceBase(TraceableScene *scene, const TraceSettings &settings, uint32 threadId);
 
-    SurfaceScatterEvent makeLocalScatterEvent(IntersectionTemporary &data, IntersectionInfo &info,
-            Ray &ray, SampleGenerator *sampler, UniformSampler *supplementalSampler) const;
-
     bool isConsistent(const SurfaceScatterEvent &event, const Vec3f &w) const;
 
-    Vec3f generalizedShadowRay(Ray &ray,
+    template<bool ComputePdfs>
+    inline Vec3f generalizedShadowRayImpl(Ray &ray,
                                const Medium *medium,
                                const Primitive *endCap,
-                               int bounce);
+                               int bounce,
+                               bool startsOnSurface,
+                               bool endsOnSurface,
+                               float &pdfForward,
+                               float &pdfBackward) const;
 
     Vec3f attenuatedEmission(const Primitive &light,
                              const Medium *medium,
@@ -60,77 +64,102 @@ protected:
                              int bounce,
                              Ray &ray);
 
-    Vec3f lightSample(const TangentFrame &frame,
-                      const Primitive &light,
-                      const Bsdf &bsdf,
+    bool volumeLensSample(const Camera &camera,
+                    PathSampleGenerator &sampler,
+                    MediumSample &mediumSample,
+                    const Medium *medium,
+                    int bounce,
+                    const Ray &parentRay,
+                    Vec3f &weight,
+                    Vec2f &pixel);
+
+    bool surfaceLensSample(const Camera &camera,
+                    SurfaceScatterEvent &event,
+                    const Medium *medium,
+                    int bounce,
+                    const Ray &parentRay,
+                    Vec3f &weight,
+                    Vec2f &pixel);
+
+    Vec3f lightSample(const Primitive &light,
                       SurfaceScatterEvent &event,
                       const Medium *medium,
                       int bounce,
-                      float epsilon,
                       const Ray &parentRay);
 
-    Vec3f bsdfSample(const TangentFrame &frame,
-                         const Primitive &light,
-                         const Bsdf &bsdf,
-                         SurfaceScatterEvent &event,
-                         const Medium *medium,
-                         int bounce,
-                         float epsilon,
-                         const Ray &parentRay);
+    Vec3f bsdfSample(const Primitive &light,
+                     SurfaceScatterEvent &event,
+                     const Medium *medium,
+                     int bounce,
+                     const Ray &parentRay);
 
-    Vec3f volumeLightSample(VolumeScatterEvent &event,
+    Vec3f volumeLightSample(PathSampleGenerator &sampler,
+                        MediumSample &mediumSample,
                         const Primitive &light,
                         const Medium *medium,
-                        bool performMis,
                         int bounce,
                         const Ray &parentRay);
 
     Vec3f volumePhaseSample(const Primitive &light,
-                        VolumeScatterEvent &event,
+                        PathSampleGenerator &sampler,
+                        MediumSample &mediumSample,
                         const Medium *medium,
                         int bounce,
                         const Ray &parentRay);
 
-    Vec3f sampleDirect(const TangentFrame &frame,
-                       const Primitive &light,
-                       const Bsdf &bsdf,
+    Vec3f sampleDirect(const Primitive &light,
                        SurfaceScatterEvent &event,
                        const Medium *medium,
                        int bounce,
-                       float epsilon,
                        const Ray &parentRay);
 
     Vec3f volumeSampleDirect(const Primitive &light,
-                        VolumeScatterEvent &event,
+                        PathSampleGenerator &sampler,
+                        MediumSample &mediumSample,
                         const Medium *medium,
                         int bounce,
                         const Ray &parentRay);
 
-    const Primitive *chooseLight(SampleGenerator &sampler, const Vec3f &p, float &weight);
+    const Primitive *chooseLight(PathSampleGenerator &sampler, const Vec3f &p, float &weight);
+    const Primitive *chooseLightAdjoint(PathSampleGenerator &sampler, float &pdf);
 
-    Vec3f volumeEstimateDirect(VolumeScatterEvent &event,
+    Vec3f volumeEstimateDirect(PathSampleGenerator &sampler,
+                        MediumSample &mediumSample,
                         const Medium *medium,
                         int bounce,
                         const Ray &parentRay);
 
-    Vec3f estimateDirect(const TangentFrame &frame,
-                         const Bsdf &bsdf,
-                         SurfaceScatterEvent &event,
+    Vec3f estimateDirect(SurfaceScatterEvent &event,
                          const Medium *medium,
                          int bounce,
-                         float epsilon,
                          const Ray &parentRay);
 
-    bool handleVolume(SampleGenerator &sampler, UniformSampler &supplementalSampler,
-               const Medium *&medium, int bounce, bool handleLights, Ray &ray,
-               Vec3f &throughput, Vec3f &emission, bool &wasSpecular, bool &hitSurface,
-               Medium::MediumState &state);
+public:
+    SurfaceScatterEvent makeLocalScatterEvent(IntersectionTemporary &data, IntersectionInfo &info,
+            Ray &ray, PathSampleGenerator *sampler) const;
 
-    bool handleSurface(IntersectionTemporary &data, IntersectionInfo &info,
-                       SampleGenerator &sampler, UniformSampler &supplementalSampler,
-                       const Medium *&medium, int bounce, bool handleLights, Ray &ray,
-                       Vec3f &throughput, Vec3f &emission, bool &wasSpecular,
-                       Medium::MediumState &state);
+    Vec3f generalizedShadowRay(Ray &ray,
+                               const Medium *medium,
+                               const Primitive *endCap,
+                               int bounce) const;
+    Vec3f generalizedShadowRayAndPdfs(Ray &ray,
+                               const Medium *medium,
+                               const Primitive *endCap,
+                               int bounce,
+                               bool startsOnSurface,
+                               bool endsOnSurface,
+                               float &pdfForward,
+                               float &pdfBackward) const;
+
+    bool handleVolume(PathSampleGenerator &sampler, MediumSample &mediumSample,
+               const Medium *&medium, int bounce, bool adjoint, bool enableLightSampling,
+               Ray &ray, Vec3f &throughput, Vec3f &emission, bool &wasSpecular);
+
+    bool handleSurface(SurfaceScatterEvent &event, IntersectionTemporary &data,
+               IntersectionInfo &info, const Medium *&medium,
+               int bounce, bool adjoint, bool enableLightSampling, Ray &ray,
+               Vec3f &throughput, Vec3f &emission, bool &wasSpecular,
+               Medium::MediumState &state);
 };
 
 }

@@ -75,6 +75,11 @@ T lerp(T a, T b, T ratio)
     return a*(T(1) - ratio) + b*ratio;
 }
 
+static inline int intLerp(int x0, int x1, int t, int range)
+{
+    return (x0*(range - t) + x1*t)/range;
+}
+
 template<typename ElementType, unsigned Size>
 Vec<ElementType, Size> lerp(const Vec<ElementType, Size> &a, const Vec<ElementType, Size> &b, ElementType ratio)
 {
@@ -90,6 +95,21 @@ T smoothStep(T edge0, T edge1, T x) {
 
 template <typename T> int sgn(T val) {
     return (T(0) < val) - (val < T(0));
+}
+
+static inline float trigInverse(float x)
+{
+    return min(std::sqrt(max(1.0f - x*x, 0.0f)), 1.0f);
+}
+
+static inline float trigDoubleAngle(float x)
+{
+    return clamp(2.0f*x*x - 1.0f, -1.0f, 1.0f);
+}
+
+static inline float trigHalfAngle(float x)
+{
+    return min(std::sqrt(max(x*0.5f + 0.5f, 0.0f)), 1.0f);
 }
 
 // TODO: Review which of these are still in use

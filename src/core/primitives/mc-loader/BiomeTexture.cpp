@@ -92,5 +92,18 @@ float BiomeTexture::pdf(TextureMapJacobian jacobian, const Vec2f &uv) const
     return _substrate->pdf(jacobian, uv);
 }
 
+void BiomeTexture::scaleValues(float factor)
+{
+    if (_substrate)
+        _substrate->scaleValues(factor);
+    if (_overlay)
+        _overlay->scaleValues(factor);
+}
+
+Texture *BiomeTexture::clone() const
+{
+    return new BiomeTexture(*this);
+}
+
 }
 }

@@ -12,6 +12,7 @@ class BsdfLobes
 public:
     enum Lobe
     {
+        NullLobe                 = 0,
         GlossyReflectionLobe     = (1 << 0),
         GlossyTransmissionLobe   = (1 << 1),
         DiffuseReflectionLobe    = (1 << 2),
@@ -30,14 +31,9 @@ public:
 
         AllLobes = TransmissiveLobe | ReflectiveLobe | AnisotropicLobe,
         AllButSpecular = ~(SpecularLobe | ForwardLobe),
-
-        InvalidLobe = 0
     };
 
-    BsdfLobes()
-    : _lobes(InvalidLobe)
-    {
-    }
+    BsdfLobes() = default;
 
     BsdfLobes(const BsdfLobes &a, const BsdfLobes &b)
     : _lobes(a._lobes | b._lobes)
@@ -74,19 +70,24 @@ public:
         return (_lobes & SpecularLobe) != 0;
     }
 
+    bool hasForward() const
+    {
+        return (_lobes & ForwardLobe) != 0;
+    }
+
     bool isPureGlossy() const
     {
-        return (_lobes & ~GlossyLobe) == 0;
+        return _lobes != 0 && (_lobes & ~GlossyLobe) == 0;
     }
 
     bool isPureSpecular() const
     {
-        return (_lobes & ~SpecularLobe) == 0;
+        return _lobes != 0 && (_lobes & ~SpecularLobe) == 0;
     }
 
     bool isPureDiffuse() const
     {
-        return (_lobes & ~DiffuseLobe) == 0;
+        return _lobes != 0 && (_lobes & ~DiffuseLobe) == 0;
     }
 
     bool isTransmissive() const
@@ -102,6 +103,11 @@ public:
     bool isForward() const
     {
         return _lobes == ForwardLobe;
+    }
+
+    bool isPureDirac() const
+    {
+        return _lobes != 0 && (_lobes & AllButSpecular) == 0;
     }
 };
 

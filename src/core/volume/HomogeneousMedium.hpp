@@ -25,16 +25,12 @@ public:
 
     virtual bool isHomogeneous() const override;
 
-    virtual void prepareForRender() override;
-    virtual void teardownAfterRender() override;
-
-    virtual bool sampleDistance(VolumeScatterEvent &event, MediumState &state) const override;
-    virtual bool absorb(VolumeScatterEvent &event, MediumState &state) const override;
-    virtual bool scatter(VolumeScatterEvent &event) const override;
-    virtual Vec3f transmittance(const VolumeScatterEvent &event) const override;
-    virtual Vec3f emission(const VolumeScatterEvent &event) const override;
-
-    virtual Vec3f phaseEval(const VolumeScatterEvent &event) const override;
+    virtual bool sampleDistance(PathSampleGenerator &sampler, const Ray &ray,
+            MediumState &state, MediumSample &sample) const override;
+    virtual Vec3f transmittance(const Ray &ray) const override;
+    virtual float pdf(const Ray &ray, bool onSurface) const override;
+    virtual Vec3f transmittanceAndPdfs(const Ray &ray, bool startOnSurface, bool endOnSurface,
+            float &pdfForward, float &pdfBackward) const override;
 
     Vec3f sigmaA() const { return _sigmaA; }
     Vec3f sigmaS() const { return _sigmaS; }

@@ -9,9 +9,12 @@ class DiskTexture : public Texture
 {
     typedef JsonSerializable::Allocator Allocator;
 
-public:
-    DiskTexture() = default;
+    Vec3f _value;
 
+public:
+    DiskTexture();
+
+    virtual void fromJson(const rapidjson::Value &v, const Scene &scene) override;
     virtual rapidjson::Value toJson(Allocator &allocator) const override;
 
     virtual bool isConstant() const override;
@@ -27,6 +30,10 @@ public:
     virtual void makeSamplable(TextureMapJacobian jacobian) override;
     virtual Vec2f sample(TextureMapJacobian jacobian, const Vec2f &uv) const override;
     virtual float pdf(TextureMapJacobian jacobian, const Vec2f &uv) const override;
+
+    virtual void scaleValues(float factor) override;
+
+    virtual Texture *clone() const override;
 };
 
 }

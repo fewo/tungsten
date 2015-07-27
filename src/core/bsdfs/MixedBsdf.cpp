@@ -5,7 +5,7 @@
 
 #include "materials/ConstantTexture.hpp"
 
-#include "sampling/UniformSampler.hpp"
+#include "sampling/PathSampleGenerator.hpp"
 
 #include "math/Vec.hpp"
 
@@ -54,9 +54,9 @@ void MixedBsdf::fromJson(const rapidjson::Value &v, const Scene &scene)
     _bsdf0 = scene.fetchBsdf(JsonUtils::fetchMember(v, "bsdf0"));
     _bsdf1 = scene.fetchBsdf(JsonUtils::fetchMember(v, "bsdf1"));
     if (_bsdf0.get() == this || _bsdf1.get() == this) {
-    	DBG("Warning: Recursive mixed BSDF not supported");
-    	_bsdf0 = scene.errorBsdf();
-    	_bsdf1 = scene.errorBsdf();
+        DBG("Warning: Recursive mixed BSDF not supported");
+        _bsdf0 = scene.errorBsdf();
+        _bsdf1 = scene.errorBsdf();
     }
     scene.textureFromJsonMember(v, "ratio", TexelConversion::REQUEST_AVERAGE, _ratio);
 }
@@ -77,27 +77,27 @@ bool MixedBsdf::sample(SurfaceScatterEvent &event) const
     if (!adjustedRatio(event.requestedLobe, event.info, ratio))
         return false;
 
-    if (event.supplementalSampler->next1D() < ratio) {
+    if (event.sampler->nextBoolean(DiscreteBsdfSample, ratio)) {
         if (!_bsdf0->sample(event))
             return false;
 
         float pdf0 = event.pdf*ratio;
         float pdf1 = _bsdf1->pdf(event)*(1.0f - ratio);
-        Vec3f f = event.throughput*event.pdf*ratio + _bsdf1->eval(event)*(1.0f - ratio);
+        Vec3f f = event.weight*event.pdf*ratio + _bsdf1->eval(event)*(1.0f - ratio);
         event.pdf = pdf0 + pdf1;
-        event.throughput = f/event.pdf;
+        event.weight = f/event.pdf;
     } else {
         if (!_bsdf1->sample(event))
             return false;
 
         float pdf0 = _bsdf0->pdf(event)*ratio;
         float pdf1 = event.pdf*(1.0f - ratio);
-        Vec3f f = _bsdf0->eval(event)*ratio + event.throughput*event.pdf*(1.0f - ratio);
+        Vec3f f = _bsdf0->eval(event)*ratio + event.weight*event.pdf*(1.0f - ratio);
         event.pdf = pdf0 + pdf1;
-        event.throughput = f/event.pdf;
+        event.weight = f/event.pdf;
     }
 
-    event.throughput *= albedo(event.info);
+    event.weight *= albedo(event.info);
     return true;
 }
 

@@ -1,7 +1,7 @@
 #include "Quad.hpp"
 #include "TriangleMesh.hpp"
 
-#include "sampling/SampleGenerator.hpp"
+#include "sampling/PathSampleGenerator.hpp"
 #include "sampling/SampleWarp.hpp"
 
 #include "io/Scene.hpp"
@@ -40,6 +40,11 @@ void Quad::buildProxy()
     _proxy.reset(new TriangleMesh(std::move(verts), std::move(tris), nullptr, "QuadLight", false, false));
 }
 
+float Quad::powerToRadianceFactor() const
+{
+    return INV_PI*_invArea;
+}
+
 void Quad::fromJson(const rapidjson::Value &v, const Scene &scene)
 {
     Primitive::fromJson(v, scene);
@@ -57,9 +62,11 @@ rapidjson::Value Quad::toJson(Allocator &allocator) const
 
 bool Quad::intersect(Ray &ray, IntersectionTemporary &data) const
 {
-    float nDotW = ray.dir().dot(_n);
+    float nDotW = ray.dir().dot(_frame.normal);
+    if (std::abs(nDotW) < 1e-6f)
+        return false;
 
-    float t = _n.dot(_base - ray.pos())/nDotW;
+    float t = _frame.normal.dot(_base - ray.pos())/nDotW;
     if (t < ray.nearT() || t > ray.farT())
         return false;
 
@@ -84,9 +91,9 @@ bool Quad::intersect(Ray &ray, IntersectionTemporary &data) const
 
 bool Quad::occluded(const Ray &ray) const
 {
-    float nDotW = ray.dir().dot(_n);
+    float nDotW = ray.dir().dot(_frame.normal);
 
-    float t = _n.dot(_base - ray.pos())/nDotW;
+    float t = _frame.normal.dot(_base - ray.pos())/nDotW;
     if (t < ray.nearT() || t > ray.farT())
         return false;
 
@@ -108,7 +115,7 @@ bool Quad::hitBackside(const IntersectionTemporary &data) const
 void Quad::intersectionInfo(const IntersectionTemporary &data, IntersectionInfo &info) const
 {
     const QuadIntersection *isect = data.as<QuadIntersection>();
-    info.Ng = info.Ns = _n;
+    info.Ng = info.Ns = _frame.normal;
     info.p = isect->p;
     info.uv = Vec2f(isect->u, isect->v);
     info.primitive = this;
@@ -128,45 +135,81 @@ bool Quad::isSamplable() const
     return true;
 }
 
-void Quad::makeSamplable(uint32 /*threadIndex*/)
+void Quad::makeSamplable(const TraceableScene &/*scene*/, uint32 /*threadIndex*/)
 {
 }
 
-float Quad::inboundPdf(uint32 /*threadIndex*/, const IntersectionTemporary &/*data*/,
-        const IntersectionInfo &/*info*/, const Vec3f &p, const Vec3f &d) const {
-    float cosTheta = std::abs(_n.dot(d));
-    float t = _n.dot(_base - p)/_n.dot(d);
+bool Quad::samplePosition(PathSampleGenerator &sampler, PositionSample &sample) const
+{
+    Vec2f xi = sampler.next2D(EmitterSample);
+    sample.p = _base + xi.x()*_edge0 + xi.y()*_edge1;
+    sample.pdf = _invArea;
+    sample.uv = xi;
+    sample.weight = PI*_area*(*_emission)[sample.uv];
+    sample.Ng = _frame.normal;
+
+    return true;
+}
+
+bool Quad::sampleDirection(PathSampleGenerator &sampler, const PositionSample &/*point*/, DirectionSample &sample) const
+{
+    Vec3f d = SampleWarp::cosineHemisphere(sampler.next2D(EmitterSample));
+    sample.d = _frame.toGlobal(d);
+    sample.weight = Vec3f(1.0f);
+    sample.pdf = SampleWarp::cosineHemispherePdf(d);
+
+    return true;
+}
+
+bool Quad::sampleDirect(uint32 /*threadIndex*/, const Vec3f &p, PathSampleGenerator &sampler, LightSample &sample) const
+{
+    if (_frame.normal.dot(p - _base) <= 0.0f)
+        return false;
+
+    Vec2f xi = sampler.next2D(EmitterSample);
+    Vec3f q = _base + xi.x()*_edge0 + xi.y()*_edge1;
+    sample.d = q - p;
+    float rSq = sample.d.lengthSq();
+    sample.dist = std::sqrt(rSq);
+    sample.d /= sample.dist;
+    float cosTheta = -_frame.normal.dot(sample.d);
+    sample.pdf = rSq/(cosTheta*_area);
+
+    return true;
+}
+
+float Quad::positionalPdf(const PositionSample &/*point*/) const
+{
+    return _invArea;
+}
+
+float Quad::directionalPdf(const PositionSample &/*point*/, const DirectionSample &sample) const
+{
+    return max(sample.d.dot(_frame.normal)*INV_PI, 0.0f);
+}
+
+float Quad::directPdf(uint32 /*threadIndex*/, const IntersectionTemporary &/*data*/,
+        const IntersectionInfo &info, const Vec3f &p) const
+{
+    float cosTheta = std::abs(_frame.normal.dot(info.w));
+    float t = _frame.normal.dot(_base - p)/_frame.normal.dot(info.w);
 
     return t*t/(cosTheta*_area);
 }
 
-bool Quad::sampleInboundDirection(uint32 /*threadIndex*/, LightSample &sample) const
+Vec3f Quad::evalPositionalEmission(const PositionSample &sample) const
 {
-    if (_n.dot(sample.p - _base) < 0.0f)
-        return false;
-
-    Vec2f xi = sample.sampler->next2D();
-    Vec3f q = _base + xi.x()*_edge0 + xi.y()*_edge1;
-    sample.d = q - sample.p;
-    float rSq = sample.d.lengthSq();
-    sample.dist = std::sqrt(rSq);
-    sample.d /= sample.dist;
-    float cosTheta = -_n.dot(sample.d);
-    sample.pdf = rSq/(cosTheta*_area);
-    return true;
+    return PI*(*_emission)[sample.uv];
 }
 
-bool Quad::sampleOutboundDirection(uint32 /*threadIndex*/, LightSample &sample) const
+Vec3f Quad::evalDirectionalEmission(const PositionSample &/*point*/, const DirectionSample &sample) const
 {
-    Vec2f xi = sample.sampler->next2D();
-    sample.p = _base + xi.x()*_edge0 + (1.0f - xi.y())*_edge1;
-    sample.d = SampleWarp::cosineHemisphere(sample.sampler->next2D());
-    sample.pdf = SampleWarp::cosineHemispherePdf(sample.d)/_area;
-    sample.weight = PI*(*_emission)[xi]*_area;
-    TangentFrame frame(_n);
-    sample.d = frame.toGlobal(sample.d);
-    sample.medium = _bsdf->overridesMedia() ? _bsdf->extMedium().get() : nullptr;
-    return true;
+    return Vec3f(max(sample.d.dot(_frame.normal), 0.0f)*INV_PI);
+}
+
+Vec3f Quad::evalDirect(const IntersectionTemporary &data, const IntersectionInfo &info) const
+{
+    return data.as<QuadIntersection>()->backSide ? Vec3f(0.0f) : (*_emission)[info.uv];
 }
 
 bool Quad::invertParametrization(Vec2f uv, Vec3f &pos) const
@@ -175,7 +218,7 @@ bool Quad::invertParametrization(Vec2f uv, Vec3f &pos) const
     return true;
 }
 
-bool Quad::isDelta() const
+bool Quad::isDirac() const
 {
     return false;
 }
@@ -191,7 +234,7 @@ float Quad::approximateRadiance(uint32 /*threadIndex*/, const Vec3f &p) const
         return 0.0f;
     Vec3f R0 = _base - p;
 
-    if (R0.dot(_n) >= 0.0f)
+    if (R0.dot(_frame.normal) >= 0.0f)
         return 0.0f;
 
     Vec3f R1 = R0 + _edge0;
@@ -235,15 +278,16 @@ void Quad::prepareForRender()
     _base -= _edge0*0.5f;
     _base -= _edge1*0.5f;
 
-    _n = _edge1.cross(_edge0);
-    _area = _n.length();
-    _n /= _area;
+    Vec3f n = _edge1.cross(_edge0);
+    _area = n.length();
+    _invArea = 1.0f/_area;
+    n /= _area;
+
+    _frame = TangentFrame(n, _edge0.normalized(), _edge1.normalized());
 
     _invUvSq = 1.0f/Vec2f(_edge0.lengthSq(), _edge1.lengthSq());
-}
 
-void Quad::teardownAfterRender()
-{
+    Primitive::prepareForRender();
 }
 
 int Quad::numBsdfs() const

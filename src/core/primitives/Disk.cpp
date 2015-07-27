@@ -1,6 +1,6 @@
 #include "Disk.hpp"
 
-#include "sampling/SampleGenerator.hpp"
+#include "sampling/PathSampleGenerator.hpp"
 #include "sampling/SampleWarp.hpp"
 
 #include "io/Scene.hpp"
@@ -15,7 +15,7 @@ struct DiskIntersection
 };
 
 Disk::Disk()
-: _coneAngle(45.0f)
+: _coneAngle(90.0f)
 {
 }
 
@@ -23,6 +23,11 @@ void Disk::buildProxy()
 {
     _proxy = std::make_shared<TriangleMesh>(std::vector<Vertex>(), std::vector<TriangleI>(), _bsdf, "Cone", false, false);
     _proxy->makeCone(1.0f, 0.01f);
+}
+
+float Disk::powerToRadianceFactor() const
+{
+    return INV_PI*_invArea;
 }
 
 void Disk::fromJson(const rapidjson::Value &v, const Scene &scene)
@@ -45,8 +50,6 @@ rapidjson::Value Disk::toJson(Allocator &allocator) const
 bool Disk::intersect(Ray &ray, IntersectionTemporary &data) const
 {
     float nDotW = ray.dir().dot(_n);
-    if (nDotW >= 0.0f)
-        return false;
 
     float t = _n.dot(_center - ray.pos())/nDotW;
     if (t < ray.nearT() || t > ray.farT())
@@ -127,27 +130,44 @@ bool Disk::isSamplable() const
     return true;
 }
 
-void Disk::makeSamplable(uint32 /*threadIndex*/)
+void Disk::makeSamplable(const TraceableScene &/*scene*/, uint32 /*threadIndex*/)
 {
 }
 
-float Disk::inboundPdf(uint32 /*threadIndex*/, const IntersectionTemporary &/*data*/,
-        const IntersectionInfo &/*info*/, const Vec3f &p, const Vec3f &d) const
+bool Disk::samplePosition(PathSampleGenerator &sampler, PositionSample &sample) const
 {
-    float cosTheta = std::abs(_n.dot(d));
-    float t = _n.dot(_center - p)/_n.dot(d);
+    Vec2f xi = sampler.next2D(EmitterSample);
+    Vec2f lQ = SampleWarp::uniformDisk(xi).xy()*_r;
+    sample.p = _center + lQ.x()*_frame.bitangent + lQ.y()*_frame.tangent;
+    sample.pdf = _invArea;
+    sample.uv = Vec2f(xi.x() + 0.5f, std::sqrt(xi.y()));
+    if (sample.uv.x() > 1.0f)
+        sample.uv.x() -= 1.0f;
+    sample.weight = PI*_area*(*_emission)[sample.uv];
+    sample.Ng = _n;
 
-    return t*t/(cosTheta*_r*_r*PI);
+    return true;
 }
 
-bool Disk::sampleInboundDirection(uint32 /*threadIndex*/, LightSample &sample) const
+bool Disk::sampleDirection(PathSampleGenerator &sampler, const PositionSample &/*point*/, DirectionSample &sample) const
 {
-    if (_n.dot(sample.p - _center) < 0.0f)
+    // TODO: Cone angle
+    Vec3f d = SampleWarp::cosineHemisphere(sampler.next2D(EmitterSample));
+    sample.d = _frame.toGlobal(d);
+    sample.weight = Vec3f(1.0f);
+    sample.pdf = SampleWarp::cosineHemispherePdf(d);
+
+    return true;
+}
+
+bool Disk::sampleDirect(uint32 /*threadIndex*/, const Vec3f &p, PathSampleGenerator &sampler, LightSample &sample) const
+{
+    if (_n.dot(p - _center) < 0.0f)
         return false;
 
-    Vec2f lQ = SampleWarp::uniformDisk(sample.sampler->next2D()).xy()*_r;
+    Vec2f lQ = SampleWarp::uniformDisk(sampler.next2D(EmitterSample)).xy()*_r;
     Vec3f q = _center + lQ.x()*_frame.bitangent + lQ.y()*_frame.tangent;
-    sample.d = q - sample.p;
+    sample.d = q - p;
     float rSq = sample.d.lengthSq();
     sample.dist = std::sqrt(rSq);
     sample.d /= sample.dist;
@@ -158,18 +178,40 @@ bool Disk::sampleInboundDirection(uint32 /*threadIndex*/, LightSample &sample) c
     return true;
 }
 
-bool Disk::sampleOutboundDirection(uint32 /*threadIndex*/, LightSample &sample) const
+float Disk::positionalPdf(const PositionSample &/*point*/) const
 {
-    Vec2f xi = sample.sampler->next2D();
-    Vec2f lQ = SampleWarp::uniformDisk(xi).xy();
-    sample.p = _center + lQ.x()*_frame.bitangent + lQ.y()*_frame.tangent;
-    sample.d = SampleWarp::cosineHemisphere(sample.sampler->next2D());
-    sample.pdf = SampleWarp::cosineHemispherePdf(sample.d)/(_r*_r*PI);
-    TangentFrame frame(_n);
-    sample.weight = PI*(*_emission)[xi]*(_r*_r*PI);
-    sample.d = frame.toGlobal(sample.d);
-    sample.medium = _bsdf->overridesMedia() ? _bsdf->extMedium().get() : nullptr;
-    return true;
+    return _invArea;
+}
+
+float Disk::directionalPdf(const PositionSample &/*point*/, const DirectionSample &sample) const
+{
+    // TODO: Cone angle
+    return max(sample.d.dot(_frame.normal)*INV_PI, 0.0f);
+}
+
+float Disk::directPdf(uint32 /*threadIndex*/, const IntersectionTemporary &/*data*/,
+        const IntersectionInfo &info, const Vec3f &p) const
+{
+    float cosTheta = std::abs(_n.dot(info.w));
+    float t = _n.dot(_center - p)/_n.dot(info.w);
+
+    return t*t/(cosTheta*_r*_r*PI);
+}
+
+Vec3f Disk::evalPositionalEmission(const PositionSample &sample) const
+{
+    return PI*(*_emission)[sample.uv];
+}
+
+Vec3f Disk::evalDirectionalEmission(const PositionSample &/*point*/, const DirectionSample &sample) const
+{
+    // TODO: Cone angle
+    return Vec3f(max(sample.d.dot(_frame.normal), 0.0f)*INV_PI);
+}
+
+Vec3f Disk::evalDirect(const IntersectionTemporary &data, const IntersectionInfo &info) const
+{
+    return data.as<DiskIntersection>()->backSide ? Vec3f(0.0f) : (*_emission)[info.uv];
 }
 
 bool Disk::invertParametrization(Vec2f uv, Vec3f &pos) const
@@ -180,7 +222,7 @@ bool Disk::invertParametrization(Vec2f uv, Vec3f &pos) const
     return true;
 }
 
-bool Disk::isDelta() const
+bool Disk::isDirac() const
 {
     return false;
 }
@@ -242,13 +284,13 @@ void Disk::prepareForRender()
     _center = _transform*Vec3f(0.0f);
     _r = (_transform.extractScale()*Vec3f(1.0f, 0.0f, 1.0f)).max();
     _n = _transform.transformVector(Vec3f(0.0f, 1.0f, 0.0f)).normalized();
+    _area = _r*_r*PI;
+    _invArea = 1.0f/_area;
     _frame = TangentFrame(_n);
     _cosApex = std::cos(Angle::degToRad(_coneAngle));
     _coneBase = _center - _n/std::sin(Angle::degToRad(_coneAngle));
-}
 
-void Disk::teardownAfterRender()
-{
+    Primitive::prepareForRender();
 }
 
 int Disk::numBsdfs() const

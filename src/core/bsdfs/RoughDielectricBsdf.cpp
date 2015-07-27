@@ -3,7 +3,7 @@
 
 #include "materials/ConstantTexture.hpp"
 
-#include "sampling/UniformSampler.hpp"
+#include "sampling/PathSampleGenerator.hpp"
 
 #include "io/JsonUtils.hpp"
 #include "io/Scene.hpp"
@@ -65,7 +65,7 @@ bool RoughDielectricBsdf::sampleBase(SurfaceScatterEvent &event, bool sampleR, b
     float alpha = Microfacet::roughnessToAlpha(distribution, roughness);
     float sampleAlpha = Microfacet::roughnessToAlpha(distribution, sampleRoughness);
 
-    Vec3f m = Microfacet::sample(distribution, sampleAlpha, event.sampler->next2D());
+    Vec3f m = Microfacet::sample(distribution, sampleAlpha, event.sampler->next2D(BsdfSample));
     float pm = Microfacet::pdf(distribution, sampleAlpha, m);
 
     if (pm < 1e-10f)
@@ -78,7 +78,7 @@ bool RoughDielectricBsdf::sampleBase(SurfaceScatterEvent &event, bool sampleR, b
 
     bool reflect;
     if (sampleR && sampleT) {
-        reflect = event.supplementalSampler->next1D() < F;
+        reflect = event.sampler->nextBoolean(DiscreteBsdfSample, F);
     } else if (sampleT) {
         if (F == 1.0f)
             return false;
@@ -107,7 +107,7 @@ bool RoughDielectricBsdf::sampleBase(SurfaceScatterEvent &event, bool sampleR, b
     float woDotM = event.wo.dot(m);
     float G = Microfacet::G(distribution, alpha, event.wi, event.wo, m);
     float D = Microfacet::D(distribution, alpha, m);
-    event.throughput = Vec3f(std::abs(wiDotM)*G*D/(std::abs(wiDotN)*pm));
+    event.weight = Vec3f(std::abs(wiDotM)*G*D/(std::abs(wiDotN)*pm));
 
     if (reflect) {
         event.pdf = pm*0.25f/std::abs(wiDotM);
@@ -124,9 +124,9 @@ bool RoughDielectricBsdf::sampleBase(SurfaceScatterEvent &event, bool sampleR, b
             event.pdf *= 1.0f - F;
     } else {
         if (reflect)
-            event.throughput *= F;
+            event.weight *= F;
         else
-            event.throughput *= 1.0f - F;
+            event.weight *= 1.0f - F;
     }
 
     return true;
@@ -209,7 +209,9 @@ bool RoughDielectricBsdf::sample(SurfaceScatterEvent &event) const
     bool sampleT = event.requestedLobe.test(BsdfLobes::GlossyTransmissionLobe) && _enableT;
     float roughness = (*_roughness)[*event.info].x();
 
-    return sampleBase(event, sampleR, sampleT, roughness, _ior, _distribution);
+    bool result = sampleBase(event, sampleR, sampleT, roughness, _ior, _distribution);
+    event.weight *= albedo(event.info);
+    return result;
 }
 
 Vec3f RoughDielectricBsdf::eval(const SurfaceScatterEvent &event) const
@@ -218,7 +220,7 @@ Vec3f RoughDielectricBsdf::eval(const SurfaceScatterEvent &event) const
     bool sampleT = event.requestedLobe.test(BsdfLobes::GlossyTransmissionLobe) && _enableT;
     float roughness = (*_roughness)[*event.info].x();
 
-    return evalBase(event, sampleR, sampleT, roughness, _ior, _distribution);
+    return evalBase(event, sampleR, sampleT, roughness, _ior, _distribution)*albedo(event.info);
 }
 
 float RoughDielectricBsdf::pdf(const SurfaceScatterEvent &event) const
@@ -230,9 +232,18 @@ float RoughDielectricBsdf::pdf(const SurfaceScatterEvent &event) const
     return pdfBase(event, sampleR, sampleT, roughness, _ior, _distribution);
 }
 
+float RoughDielectricBsdf::eta(const SurfaceScatterEvent &event) const
+{
+    if (event.wi.z()*event.wo.z() >= 0.0f)
+        return 1.0f;
+    else
+        return event.wi.z() < 0.0f ? _ior : _invIor;
+}
+
 void RoughDielectricBsdf::prepareForRender()
 {
     _distribution = Microfacet::stringToType(_distributionName);
+    _invIor = 1.0f/_ior;
 }
 
 }

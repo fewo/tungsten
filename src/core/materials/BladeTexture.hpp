@@ -11,6 +11,7 @@ class BladeTexture : public Texture
 
     int _numBlades;
     float _angle;
+    Vec3f _value;
 
     float _area;
     float _bladeAngle;
@@ -38,6 +39,10 @@ public:
     virtual void makeSamplable(TextureMapJacobian jacobian) override;
     virtual Vec2f sample(TextureMapJacobian jacobian, const Vec2f &uv) const override;
     virtual float pdf(TextureMapJacobian jacobian, const Vec2f &uv) const override;
+
+    virtual void scaleValues(float factor) override;
+
+    virtual Texture *clone() const override;
 
     float angle() const
     {

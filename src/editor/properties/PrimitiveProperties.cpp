@@ -19,18 +19,14 @@ void PrimitiveProperties::fillPropertySheet(PropertySheet *sheet, Primitive *p)
             emit triggerRedraw();
             return true;
     });
-    FloatProperty *bumpStrength = sheet->addFloatProperty(p->bumpStrength(), "Bump strength", [this, p](float s) {
-        p->setBumpStrength(s);
+    sheet->addMediumProperty(p->intMedium(), "Interior medium", _scene, [this, p](std::shared_ptr<Medium> &m) {
+        p->setIntMedium(m);
         return true;
     });
-    sheet->addTextureProperty(p->bump(), "Bump map", true, _scene, TexelConversion::REQUEST_AVERAGE,
-        [this, p, bumpStrength](std::shared_ptr<Texture> &bump) {
-            p->setBump(bump);
-            bumpStrength->setVisible(bump != nullptr);
-            return true;
+    sheet->addMediumProperty(p->extMedium(), "Exterior medium", _scene, [this, p](std::shared_ptr<Medium> &m) {
+        p->setIntMedium(m);
+        return true;
     });
-    if (!p->bump())
-        bumpStrength->setVisible(false);
 
     sheet->setRowStretch(sheet->rowCount(), 1);
 }

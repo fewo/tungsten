@@ -34,6 +34,7 @@ private:
     int _w;
     int _h;
     TexelType _texelType;
+    float _scale;
 
     std::unique_ptr<Distribution2D> _distribution[MAP_JACOBIAN_COUNT];
 
@@ -61,6 +62,8 @@ public:
     BitmapTexture(PathPtr path, TexelConversion conversion, bool gammaCorrect, bool linear, bool clamp);
     BitmapTexture(void *texels, int w, int h, TexelType texelType, bool linear, bool clamp);
 
+    BitmapTexture(const BitmapTexture &o);
+
     ~BitmapTexture();
 
     virtual void fromJson(const rapidjson::Value &v, const Scene &scene) override;
@@ -81,6 +84,10 @@ public:
     virtual void makeSamplable(TextureMapJacobian jacobian) override;
     virtual Vec2f sample(TextureMapJacobian jacobian, const Vec2f &uv) const override;
     virtual float pdf(TextureMapJacobian jacobian, const Vec2f &uv) const override;
+
+    virtual void scaleValues(float factor) override;
+
+    virtual Texture *clone() const override;
 
     const PathPtr &path() const
     {

@@ -1,7 +1,7 @@
 #include "Cube.hpp"
 #include "TriangleMesh.hpp"
 
-#include "sampling/SampleGenerator.hpp"
+#include "sampling/PathSampleGenerator.hpp"
 #include "sampling/SampleWarp.hpp"
 
 #include "io/Scene.hpp"
@@ -35,6 +35,26 @@ void Cube::buildProxy()
 {
     _proxy = std::make_shared<TriangleMesh>(std::vector<Vertex>(), std::vector<TriangleI>(), _bsdf, "Cube", false, false);
     _proxy->makeCube();
+}
+
+inline int Cube::sampleFace(float &u) const
+{
+    u *= _faceCdf.z();
+    if (u < _faceCdf.x()) {
+        u /= _faceCdf.x();
+        return 0;
+    } else if (u < _faceCdf.y()) {
+        u = (u - _faceCdf.x())/(_faceCdf.y() - _faceCdf.x());
+        return 1;
+    } else {
+        u = (u - _faceCdf.y())/(_faceCdf.z() - _faceCdf.y());
+        return 2;
+    }
+}
+
+float Cube::powerToRadianceFactor() const
+{
+    return INV_PI*_invArea;
 }
 
 void Cube::fromJson(const rapidjson::Value &v, const Scene &scene)
@@ -143,27 +163,96 @@ bool Cube::tangentSpace(const IntersectionTemporary &/*data*/, const Intersectio
 
 bool Cube::isSamplable() const
 {
-    return false;
+    return true;
 }
 
-void Cube::makeSamplable(uint32 /*threadIndex*/)
+void Cube::makeSamplable(const TraceableScene &/*scene*/, uint32 /*threadIndex*/)
 {
 }
 
-float Cube::inboundPdf(uint32 /*threadIndex*/, const IntersectionTemporary &/*data*/,
-        const IntersectionInfo &/*info*/, const Vec3f &/*p*/, const Vec3f &/*d*/) const
+bool Cube::samplePosition(PathSampleGenerator &sampler, PositionSample &sample) const
 {
-    return 0.0f;
+    float u = sampler.next1D(EmitterSample);
+    int dim = sampleFace(u);
+    float s = (dim + 1) % 3;
+    float t = (dim + 2) % 3;
+
+    Vec2f xi = sampler.next2D(EmitterSample);
+
+    Vec3f n(0.0f);
+    n[dim] = u < 0.5f ? -1.0f : 1.0f;
+
+    Vec3f p(0.0f);
+    p[dim] = n[dim]*_scale[dim];
+    p[s] = (xi.x()*2.0f - 1.0f)*_scale[s];
+    p[t] = (xi.y()*2.0f - 1.0f)*_scale[t];
+
+    sample.p = _rot*p + _pos;
+    sample.pdf = _invArea;
+    sample.uv = xi;
+    sample.weight = PI*_area*(*_emission)[sample.uv];
+    sample.Ng = _rot*n;
+
+    return true;
 }
 
-bool Cube::sampleInboundDirection(uint32 /*threadIndex*/, LightSample &/*sample*/) const
+bool Cube::sampleDirection(PathSampleGenerator &sampler, const PositionSample &point, DirectionSample &sample) const
 {
-    return false;
+    Vec3f d = SampleWarp::cosineHemisphere(sampler.next2D(EmitterSample));
+    sample.d = TangentFrame(point.Ng).toGlobal(d);
+    sample.weight = Vec3f(1.0f);
+    sample.pdf = SampleWarp::cosineHemispherePdf(d);
+
+    return true;
 }
 
-bool Cube::sampleOutboundDirection(uint32 /*threadIndex*/, LightSample &/*sample*/) const
+bool Cube::sampleDirect(uint32 /*threadIndex*/, const Vec3f &p, PathSampleGenerator &sampler, LightSample &sample) const
 {
-    return false;
+    PositionSample point;
+    samplePosition(sampler, point);
+
+    Vec3f L = point.p - p;
+
+    float rSq = L.lengthSq();
+    sample.dist = std::sqrt(rSq);
+    sample.d = L/sample.dist;
+    float cosTheta = -(point.Ng.dot(sample.d));
+    if (cosTheta <= 0.0f)
+        return false;
+    sample.pdf = rSq/(cosTheta*_area);
+
+    return true;
+}
+
+float Cube::positionalPdf(const PositionSample &/*point*/) const
+{
+    return _invArea;
+}
+
+float Cube::directionalPdf(const PositionSample &point, const DirectionSample &sample) const
+{
+    return max(sample.d.dot(point.Ng)*INV_PI, 0.0f);
+}
+
+float Cube::directPdf(uint32 /*threadIndex*/, const IntersectionTemporary &/*data*/,
+        const IntersectionInfo &info, const Vec3f &p) const
+{
+    return (p - info.p).lengthSq()/(-info.w.dot(info.Ng)*_area);
+}
+
+Vec3f Cube::evalPositionalEmission(const PositionSample &sample) const
+{
+    return PI*(*_emission)[sample.uv];
+}
+
+Vec3f Cube::evalDirectionalEmission(const PositionSample &point, const DirectionSample &sample) const
+{
+    return Vec3f(max(sample.d.dot(point.Ng), 0.0f)*INV_PI);
+}
+
+Vec3f Cube::evalDirect(const IntersectionTemporary &data, const IntersectionInfo &info) const
+{
+    return data.as<CubeIntersection>()->backSide ? Vec3f(0.0f) : (*_emission)[info.uv];
 }
 
 bool Cube::invertParametrization(Vec2f /*uv*/, Vec3f &/*pos*/) const
@@ -171,7 +260,7 @@ bool Cube::invertParametrization(Vec2f /*uv*/, Vec3f &/*pos*/) const
     return false;
 }
 
-bool Cube::isDelta() const
+bool Cube::isDirac() const
 {
     return false;
 }
@@ -181,9 +270,10 @@ bool Cube::isInfinite() const
     return false;
 }
 
-float Cube::approximateRadiance(uint32 /*threadIndex*/, const Vec3f &/*p*/) const
+float Cube::approximateRadiance(uint32 /*threadIndex*/, const Vec3f &p) const
 {
-    return 0.0f;
+    float dSq = max(std::abs(_invRot*(p - _pos)), Vec3f(0.0f)).lengthSq();
+    return _emission->average().max()*_faceCdf.z()/dSq;
 }
 
 Box3f Cube::bounds() const
@@ -212,10 +302,17 @@ void Cube::prepareForRender()
     _scale = _transform.extractScale()*Vec3f(0.5f);
     _rot = _transform.extractRotation();
     _invRot = _rot.transpose();
-}
+    _faceCdf = 4.0f*Vec3f(
+        _scale.y()*_scale.z(),
+        _scale.z()*_scale.x(),
+        _scale.x()*_scale.y()
+    );
+    _faceCdf.y() += _faceCdf.x();
+    _faceCdf.z() += _faceCdf.y();
+    _area = 2.0f*_faceCdf.z();
+    _invArea = 1.0f/_area;
 
-void Cube::teardownAfterRender()
-{
+    Primitive::prepareForRender();
 }
 
 int Cube::numBsdfs() const

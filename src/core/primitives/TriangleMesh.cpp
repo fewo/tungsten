@@ -1,7 +1,7 @@
 #include "TriangleMesh.hpp"
 #include "EmbreeUtil.hpp"
 
-#include "sampling/SampleGenerator.hpp"
+#include "sampling/PathSampleGenerator.hpp"
 #include "sampling/SampleWarp.hpp"
 
 #include "math/TangentFrame.hpp"
@@ -45,6 +45,7 @@ TriangleMesh::TriangleMesh(const TriangleMesh &o)
   _recomputeNormals(o._recomputeNormals),
   _verts(o._verts),
   _tris(o._tris),
+  _bsdfs(o._bsdfs),
   _bounds(o._bounds)
 {
 }
@@ -103,6 +104,12 @@ Vec2f TriangleMesh::uvAt(int triangle, float u, float v) const
     Vec2f uv2 = _tfVerts[t.v2].uv();
     return (1.0f - u - v)*uv0 + u*uv1 + v*uv2;
 }
+
+float TriangleMesh::powerToRadianceFactor() const
+{
+    return INV_PI*_invArea;
+}
+
 
 void TriangleMesh::fromJson(const rapidjson::Value &v, const Scene &scene)
 {
@@ -368,7 +375,7 @@ bool TriangleMesh::isSamplable() const
     return true;
 }
 
-void TriangleMesh::makeSamplable(uint32 /*threadIndex*/)
+void TriangleMesh::makeSamplable(const TraceableScene &/*scene*/, uint32 /*threadIndex*/)
 {
     if (_triSampler)
         return;
@@ -385,30 +392,53 @@ void TriangleMesh::makeSamplable(uint32 /*threadIndex*/)
     _triSampler.reset(new Distribution1D(std::move(areas)));
 }
 
-float TriangleMesh::inboundPdf(uint32 /*threadIndex*/, const IntersectionTemporary &/*data*/,
-        const IntersectionInfo &info, const Vec3f &p, const Vec3f &d) const
+bool TriangleMesh::samplePosition(PathSampleGenerator &sampler, PositionSample &sample) const
 {
-    return (p - info.p).lengthSq()/(-d.dot(info.Ng.normalized())*_totalArea);
-}
-
-bool TriangleMesh::sampleInboundDirection(uint32 /*threadIndex*/, LightSample &sample) const
-{
-    float u = sample.sampler->next1D();
+    float u = sampler.next1D(EmitterSample);
     int idx;
     _triSampler->warp(u, idx);
 
     Vec3f p0 = _tfVerts[_tris[idx].v0].pos();
     Vec3f p1 = _tfVerts[_tris[idx].v1].pos();
     Vec3f p2 = _tfVerts[_tris[idx].v2].pos();
+    Vec2f uv0 = _tfVerts[_tris[idx].v0].uv();
+    Vec2f uv1 = _tfVerts[_tris[idx].v1].uv();
+    Vec2f uv2 = _tfVerts[_tris[idx].v2].uv();
     Vec3f normal = (p1 - p0).cross(p2 - p0).normalized();
 
-    Vec3f p = SampleWarp::uniformTriangle(sample.sampler->next2D(), p0, p1, p2);
-    Vec3f L = p - sample.p;
+    Vec2f lambda = SampleWarp::uniformTriangleUv(sampler.next2D(EmitterSample));
+
+    sample.p = p0*lambda.x() + p1*lambda.y() + p2*(1.0f - lambda.x() - lambda.y());
+    sample.uv = uv0*lambda.x() + uv1*lambda.y() + uv2*(1.0f - lambda.x() - lambda.y());
+    sample.weight = PI*_totalArea*(*_emission)[sample.uv];
+    sample.pdf = _invArea;
+    sample.Ng = normal;
+
+    return true;
+}
+
+bool TriangleMesh::sampleDirection(PathSampleGenerator &sampler, const PositionSample &point, DirectionSample &sample) const
+{
+    Vec3f d = SampleWarp::cosineHemisphere(sampler.next2D(EmitterSample));
+    sample.d = TangentFrame(point.Ng).toGlobal(d);
+    sample.weight = Vec3f(1.0f);
+    sample.pdf = SampleWarp::cosineHemispherePdf(d);
+
+    return true;
+}
+
+bool TriangleMesh::sampleDirect(uint32 /*threadIndex*/, const Vec3f &p,
+        PathSampleGenerator &sampler, LightSample &sample) const
+{
+    PositionSample point;
+    samplePosition(sampler, point);
+
+    Vec3f L = point.p - p;
 
     float rSq = L.lengthSq();
     sample.dist = std::sqrt(rSq);
     sample.d = L/sample.dist;
-    float cosTheta = -(normal.dot(sample.d));
+    float cosTheta = -(point.Ng.dot(sample.d));
     if (cosTheta <= 0.0f)
         return false;
     sample.pdf = rSq/(cosTheta*_totalArea);
@@ -416,24 +446,35 @@ bool TriangleMesh::sampleInboundDirection(uint32 /*threadIndex*/, LightSample &s
     return true;
 }
 
-bool TriangleMesh::sampleOutboundDirection(uint32 /*threadIndex*/, LightSample &sample) const
+float TriangleMesh::positionalPdf(const PositionSample &/*point*/) const
 {
-    float u = sample.sampler->next1D();
-    int idx;
-    _triSampler->warp(u, idx);
+    return _invArea;
+}
 
-    Vec3f p0 = _tfVerts[_tris[idx].v0].pos();
-    Vec3f p1 = _tfVerts[_tris[idx].v1].pos();
-    Vec3f p2 = _tfVerts[_tris[idx].v2].pos();
-    Vec3f normal = (p1 - p0).cross(p2 - p0).normalized();
-    TangentFrame frame(normal);
+float TriangleMesh::directionalPdf(const PositionSample &point, const DirectionSample &sample) const
+{
+    return max(sample.d.dot(point.Ng)*INV_PI, 0.0f);
+}
 
-    sample.p = SampleWarp::uniformTriangle(sample.sampler->next2D(), p0, p1, p2);
-    sample.d = SampleWarp::cosineHemisphere(sample.sampler->next2D());
-    sample.pdf = SampleWarp::cosineHemispherePdf(sample.d)/_totalArea;
-    sample.d = frame.toGlobal(sample.d);
+float TriangleMesh::directPdf(uint32 /*threadIndex*/, const IntersectionTemporary &/*data*/,
+        const IntersectionInfo &info, const Vec3f &p) const
+{
+    return (p - info.p).lengthSq()/(-info.w.dot(info.Ng)*_totalArea);
+}
 
-    return true;
+Vec3f TriangleMesh::evalPositionalEmission(const PositionSample &sample) const
+{
+    return PI*(*_emission)[sample.uv];
+}
+
+Vec3f TriangleMesh::evalDirectionalEmission(const PositionSample &point, const DirectionSample &sample) const
+{
+    return Vec3f(max(sample.d.dot(point.Ng), 0.0f)*INV_PI);
+}
+
+Vec3f TriangleMesh::evalDirect(const IntersectionTemporary &data, const IntersectionInfo &info) const
+{
+    return data.as<MeshIntersection>()->backSide ? Vec3f(0.0f) : (*_emission)[info.uv];
 }
 
 bool TriangleMesh::invertParametrization(Vec2f /*uv*/, Vec3f &/*pos*/) const
@@ -441,7 +482,7 @@ bool TriangleMesh::invertParametrization(Vec2f /*uv*/, Vec3f &/*pos*/) const
     return false;
 }
 
-bool TriangleMesh::isDelta() const
+bool TriangleMesh::isDirac() const
 {
     return _verts.empty() || _tris.empty();
 }
@@ -498,6 +539,7 @@ void TriangleMesh::prepareForRender()
         Vec3f p2 = _tfVerts[_tris[i].v2].pos();
         _totalArea += MathUtil::triangleArea(p0, p1, p2);
     }
+    _invArea = 1.0f/_totalArea;
 
     embree::rtcUnmapPositionBuffer(_geom);
     embree::rtcUnmapTriangleBuffer(_geom);
@@ -507,6 +549,8 @@ void TriangleMesh::prepareForRender()
         _intersector = embree::rtcQueryIntersector1(_geom, "fast.moeller_cull");
     else
         _intersector = embree::rtcQueryIntersector1(_geom, "fast.moeller");
+
+    Primitive::prepareForRender();
 }
 
 void TriangleMesh::teardownAfterRender()
@@ -516,6 +560,8 @@ void TriangleMesh::teardownAfterRender()
     _geom = nullptr;
     _intersector = nullptr;
     _tfVerts.clear();
+
+    Primitive::teardownAfterRender();
 }
 
 int TriangleMesh::numBsdfs() const

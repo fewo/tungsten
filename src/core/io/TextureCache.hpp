@@ -4,6 +4,7 @@
 #include "ImageIO.hpp"
 
 #include <rapidjson/document.h>
+#include <functional>
 #include <utility>
 #include <memory>
 #include <string>
@@ -32,7 +33,7 @@ public:
             bool gammaCorrect = true, bool linear = true, bool clamp = false);
 
     std::shared_ptr<IesTexture> fetchIesTexture(const rapidjson::Value &value, const Scene *scene);
-    std::shared_ptr<IesTexture> fetchIesTexture(PathPtr path, int resolution, float scale);
+    std::shared_ptr<IesTexture> fetchIesTexture(PathPtr path, int resolution);
 
     void loadResources();
     void prune();

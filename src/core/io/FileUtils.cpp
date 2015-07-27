@@ -271,7 +271,7 @@ OutputStreamHandle FileUtils::openFileOutputStream(const Path &p)
     std::unique_ptr<FileOutputStreambuf> streambuf(new FileOutputStreambuf(std::move(file)));
     std::shared_ptr<std::ostream> out(new std::ostream(streambuf.get()),
             [](std::ostream *stream){ finalizeStream(stream); });
-    _metaData.insert(std::make_pair(out.get(), StreamMetadata(std::move(streambuf))));
+    _metaData.insert(std::make_pair(out.get(), std::move(StreamMetadata(std::move(streambuf)))));
 #else
     std::shared_ptr<std::ostream> out(new std::ofstream(p.absolute().asString(),
             std::ios_base::out | std::ios_base::binary),
@@ -461,7 +461,7 @@ std::string FileUtils::loadText(const Path &path)
     else
         offset = 3;
 
-    std::string text(size, '\0');
+    std::string text(size_t(size), '\0');
     for (int i = 0; i < offset; ++i)
         text[i] = head[sizeof(head) - offset + i];
     in->read(&text[offset], size);
@@ -508,16 +508,23 @@ bool FileUtils::copyFile(const Path &src, const Path &dst, bool createDstDir)
 bool FileUtils::moveFile(const Path &src, const Path &dst, bool deleteDst)
 {
     if (dst.exists()) {
-        if (!deleteDst)
+        if (!deleteDst) {
             return false;
-        else if (!FileUtils::deleteFile(dst))
-            return false;
-    }
+        } else {
 #if _WIN32
-    return MoveFileW(makeWideLongPath(src).c_str(), makeWideLongPath(dst).c_str()) != 0;
+        return ReplaceFileW(makeWideLongPath(dst).c_str(), makeWideLongPath(src).c_str(), NULL, 0, 0, 0) != 0;
 #else
-    return rename(src.absolute().asString().c_str(), dst.absolute().asString().c_str()) == 0;
+        return rename(src.absolute().asString().c_str(), dst.absolute().asString().c_str()) == 0;
 #endif
+
+        }
+    } else {
+#if _WIN32
+        return MoveFileW(makeWideLongPath(src).c_str(), makeWideLongPath(dst).c_str()) != 0;
+#else
+        return rename(src.absolute().asString().c_str(), dst.absolute().asString().c_str()) == 0;
+#endif
+    }
 }
 
 bool FileUtils::deleteFile(const Path &path)

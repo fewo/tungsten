@@ -3,9 +3,16 @@
 #include "JsonUtils.hpp"
 #include "FileUtils.hpp"
 
-#include "integrators/pppm/ProgressivePhotonMapIntegrator.hpp"
-#include "integrators/pathtrace/PathTraceIntegrator.hpp"
-#include "integrators/photonmap/PhotonMapIntegrator.hpp"
+#include "phasefunctions/HenyeyGreensteinPhaseFunction.hpp"
+#include "phasefunctions/IsotropicPhaseFunction.hpp"
+#include "phasefunctions/RayleighPhaseFunction.hpp"
+
+#include "integrators/bidirectional_path_tracer/BidirectionalPathTraceIntegrator.hpp"
+#include "integrators/progressive_photon_map/ProgressivePhotonMapIntegrator.hpp"
+#include "integrators/light_tracer/LightTraceIntegrator.hpp"
+#include "integrators/kelemen_mlt/KelemenMltIntegrator.hpp"
+#include "integrators/path_tracer/PathTraceIntegrator.hpp"
+#include "integrators/photon_map/PhotonMapIntegrator.hpp"
 
 #include "primitives/mc-loader/TraceableMinecraftMap.hpp"
 #include "primitives/InfiniteSphereCap.hpp"
@@ -14,6 +21,7 @@
 #include "primitives/Skydome.hpp"
 #include "primitives/Sphere.hpp"
 #include "primitives/Curves.hpp"
+#include "primitives/Point.hpp"
 #include "primitives/Cube.hpp"
 #include "primitives/Quad.hpp"
 #include "primitives/Disk.hpp"
@@ -24,11 +32,17 @@
 #include "materials/DiskTexture.hpp"
 #include "materials/IesTexture.hpp"
 
+#include "cameras/EquirectangularCamera.hpp"
 #include "cameras/ThinlensCamera.hpp"
+#include "cameras/CubemapCamera.hpp"
 #include "cameras/PinholeCamera.hpp"
 
 #include "volume/HomogeneousMedium.hpp"
 #include "volume/AtmosphericMedium.hpp"
+
+#include "bcsdfs/LambertianFiberBcsdf.hpp"
+#include "bcsdfs/RoughWireBcsdf.hpp"
+#include "bcsdfs/HairBcsdf.hpp"
 
 #include "bsdfs/RoughDielectricBsdf.hpp"
 #include "bsdfs/RoughConductorBsdf.hpp"
@@ -92,6 +106,23 @@ Scene::Scene(const Path &srcDir,
 {
 }
 
+std::shared_ptr<PhaseFunction> Scene::instantiatePhase(std::string type, const rapidjson::Value &value) const
+{
+    std::shared_ptr<PhaseFunction> result;
+    if (type == "isotropic")
+        result = std::make_shared<IsotropicPhaseFunction>();
+    else if (type == "henyey_greenstein")
+        result = std::make_shared<HenyeyGreensteinPhaseFunction>();
+    else if (type == "rayleigh")
+        result = std::make_shared<RayleighPhaseFunction>();
+    else {
+        DBG("Unkown phase function type: '%s'", type.c_str());
+        return nullptr;
+    }
+    result->fromJson(value, *this);
+    return result;
+}
+
 std::shared_ptr<Medium> Scene::instantiateMedium(std::string type, const rapidjson::Value &value) const
 {
     std::shared_ptr<Medium> result;
@@ -144,6 +175,12 @@ std::shared_ptr<Bsdf> Scene::instantiateBsdf(std::string type, const rapidjson::
         result = std::make_shared<RoughCoatBsdf>();
     else if (type == "transparency")
         result = std::make_shared<TransparencyBsdf>();
+    else if (type == "lambertian_fiber")
+        result = std::make_shared<LambertianFiberBcsdf>();
+    else if (type == "rough_wire")
+        result = std::make_shared<RoughWireBcsdf>();
+    else if (type == "hair")
+        result = std::make_shared<HairBcsdf>();
     else {
         DBG("Unkown bsdf type: '%s'", type.c_str());
         return nullptr;
@@ -175,6 +212,8 @@ std::shared_ptr<Primitive> Scene::instantiatePrimitive(std::string type, const r
         result = std::make_shared<MinecraftLoader::TraceableMinecraftMap>();
     else if (type == "skydome")
         result = std::make_shared<Skydome>();
+    else if (type == "point")
+        result = std::make_shared<Point>();
     else {
         DBG("Unknown primitive type: '%s'", type.c_str());
         return nullptr;
@@ -191,6 +230,10 @@ std::shared_ptr<Camera> Scene::instantiateCamera(std::string type, const rapidjs
         result = std::make_shared<PinholeCamera>();
     else if (type == "thinlens")
         result = std::make_shared<ThinlensCamera>();
+    else if (type == "equirectangular")
+        result = std::make_shared<EquirectangularCamera>();
+    else if (type == "cubemap")
+        result = std::make_shared<CubemapCamera>();
     else {
         DBG("Unknown camera type: '%s'", type.c_str());
         return nullptr;
@@ -203,12 +246,18 @@ std::shared_ptr<Camera> Scene::instantiateCamera(std::string type, const rapidjs
 std::shared_ptr<Integrator> Scene::instantiateIntegrator(std::string type, const rapidjson::Value &value) const
 {
     std::shared_ptr<Integrator> result;
-    if (type == "path_trace")
+    if (type == "path_tracer")
         result = std::make_shared<PathTraceIntegrator>();
+    else if (type == "light_tracer")
+        result = std::make_shared<LightTraceIntegrator>();
     else if (type == "photon_map")
         result = std::make_shared<PhotonMapIntegrator>();
     else if (type == "progressive_photon_map")
         result = std::make_shared<ProgressivePhotonMapIntegrator>();
+    else if (type == "bidirectional_path_tracer")
+        result = std::make_shared<BidirectionalPathTraceIntegrator>();
+    else if (type == "kelemen_mlt")
+        result = std::make_shared<KelemenMltIntegrator>();
     else {
         DBG("Unknown integrator type: '%s'", type.c_str());
         return nullptr;
@@ -247,9 +296,9 @@ void Scene::loadObjectList(const rapidjson::Value &container, Instantiator insta
 {
     for (unsigned i = 0; i < container.Size(); ++i) {
         if (container[i].IsObject()) {
-        	auto element = instantiator(JsonUtils::as<std::string>(container[i], "type"), container[i]);
-        	if (element)
-        		result.push_back(std::move(element));
+            auto element = instantiator(JsonUtils::as<std::string>(container[i], "type"), container[i]);
+            if (element)
+                result.push_back(std::move(element));
         } else {
             DBG("Don't know what to do with non-object in object list");
         }
@@ -279,6 +328,11 @@ std::shared_ptr<T> Scene::fetchObject(const std::vector<std::shared_ptr<T>> &lis
     }
 }
 
+std::shared_ptr<PhaseFunction> Scene::fetchPhase(const rapidjson::Value &v) const
+{
+    return instantiatePhase(JsonUtils::as<std::string>(v, "type"), v);
+}
+
 std::shared_ptr<Medium> Scene::fetchMedium(const rapidjson::Value &v) const
 {
     using namespace std::placeholders;
@@ -290,7 +344,7 @@ std::shared_ptr<Bsdf> Scene::fetchBsdf(const rapidjson::Value &v) const
     using namespace std::placeholders;
     auto result = fetchObject(_bsdfs, v, std::bind(&Scene::instantiateBsdf, this, _1, _2));
     if (!result)
-    	return _errorBsdf;
+        return _errorBsdf;
     return std::move(result);
 }
 
@@ -309,7 +363,7 @@ std::shared_ptr<Texture> Scene::fetchTexture(const rapidjson::Value &v, TexelCon
     else if (v.IsObject())
         return instantiateTexture(JsonUtils::as<std::string>(v, "type"), v, conversion);
     else
-    	DBG("Cannot instantiate texture from unknown value type");
+        DBG("Cannot instantiate texture from unknown value type");
     return nullptr;
 }
 
@@ -405,16 +459,15 @@ void Scene::addPrimitive(const std::shared_ptr<Primitive> &mesh)
     if (addUnique(mesh, _primitives))
         for (int i = 0; i < mesh->numBsdfs(); ++i)
             addBsdf(mesh->bsdf(i));
+        if (mesh->intMedium())
+            addUnique(mesh->intMedium(), _media);
+        if (mesh->extMedium())
+            addUnique(mesh->extMedium(), _media);
 }
 
 void Scene::addBsdf(const std::shared_ptr<Bsdf> &bsdf)
 {
-    if (addUnique(bsdf, _bsdfs)) {
-        if (bsdf->intMedium())
-            addUnique(bsdf->intMedium(), _media);
-        if (bsdf->extMedium())
-            addUnique(bsdf->extMedium(), _media);
-    }
+    addUnique(bsdf, _bsdfs);
 }
 
 void Scene::merge(Scene scene)
@@ -446,15 +499,15 @@ void Scene::fromJson(const rapidjson::Value &v, const Scene &scene)
         loadObjectList(primitives->value, std::bind(&Scene::instantiatePrimitive, this, _1, _2), _primitives);
 
     if (camera && camera->value.IsObject()) {
-    	auto result = instantiateCamera(JsonUtils::as<std::string>(camera->value, "type"), camera->value);
-    	if (result)
-    		_camera = std::move(result);
+        auto result = instantiateCamera(JsonUtils::as<std::string>(camera->value, "type"), camera->value);
+        if (result)
+            _camera = std::move(result);
     }
 
     if (integrator && integrator->value.IsObject()) {
-    	auto result = instantiateIntegrator(JsonUtils::as<std::string>(integrator->value, "type"), integrator->value);
-    	if (result)
-    		_integrator = std::move(result);
+        auto result = instantiateIntegrator(JsonUtils::as<std::string>(integrator->value, "type"), integrator->value);
+        if (result)
+            _integrator = std::move(result);
     }
 
     if (renderer && renderer->value.IsObject())

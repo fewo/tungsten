@@ -14,6 +14,7 @@
 #include <ImfChannelList.h>
 #include <ImfOutputFile.h>
 #include <ImfInputFile.h>
+#include <ImfIO.h>
 #include <half.h>
 #endif
 
@@ -132,7 +133,7 @@ static int stbiReadCallback(void *user, char *data, int size)
 {
     std::istream &in = *static_cast<std::istream *>(user);
     in.read(data, size);
-    return in.gcount();
+    return int(in.gcount());
 }
 static void stbiSkipCallback(void *user, int n)
 {
@@ -160,7 +161,7 @@ bool isHdr(const Path &path)
     InputStreamHandle in = FileUtils::openInputStream(path);
     if (!in)
         return false;
-    return stbi_is_hdr_from_callbacks(&istreamCallback, in.get());
+    return stbi_is_hdr_from_callbacks(&istreamCallback, in.get()) != 0;
 }
 
 template<typename T>
@@ -235,8 +236,7 @@ static std::unique_ptr<float[]> loadExr(const Path &path, TexelConversion reques
     } else if (!isScalar && yChannel) {
         // The user wants RGB and we have just luminance -> duplicate luminance across all three channels
         // This is not the best solution, but we don't want to deal with chroma subsampled images
-        for (int i = 0; i < 3; ++i)
-            frameBuffer.insert("Y", Imf::Slice(Imf::FLOAT, base + i*sizeof(float), texelSize, texelSize*w));
+        frameBuffer.insert("Y", Imf::Slice(Imf::FLOAT, base, texelSize, texelSize*w));
     } else if (isScalar) {
         // The user wants a scalar texture and we have (some) RGB channels
         // We can't read directly into the destination, but have to read to a temporary
@@ -275,6 +275,10 @@ static std::unique_ptr<float[]> loadExr(const Path &path, TexelConversion reques
             float b = bChannel ? img[i*sourceChannels + bLocation] : 0.0f;
             texels[i] = convertToScalar(request, r, g, b, 0.0f, false);
         }
+    } else if (!isScalar && yChannel) {
+        // Here we need to duplicate the Y channel stored in R across G and B
+        for (int i = 0; i < w*h; ++i)
+            texels[i*3 + 1] = texels[i*3 + 2] = texels[i*3];
     }
 
     return std::move(texels);
@@ -381,12 +385,12 @@ DeletablePixels loadPng(const Path &path, int &w, int &h, int &channels)
     if (size == 0 || !in)
         return makeVoidPixels();
 
-    std::unique_ptr<uint8[]> file(new uint8[size]);
-    FileUtils::streamRead(in, file.get(), size);
+    std::unique_ptr<uint8[]> file(new uint8[size_t(size)]);
+    FileUtils::streamRead(in, file.get(), size_t(size));
 
     uint8 *dst = nullptr;
     uint32 uw, uh;
-    lodepng_decode_memory(&dst, &uw, &uh, file.get(), size, LCT_RGBA, 8);
+    lodepng_decode_memory(&dst, &uw, &uh, file.get(), size_t(size), LCT_RGBA, 8);
     if (!dst)
         return makeVoidPixels();
 

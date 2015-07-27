@@ -130,7 +130,6 @@ bool BsdfProperty::hasAlbedo(BsdfType type) const
     case TYPE_FORWARD:
     case TYPE_NULL:
     case TYPE_ROUGH_COAT:
-    case TYPE_ROUGH_DIELECTRIC:
     case TYPE_SMOOTH_COAT:
     case TYPE_THIN_SHEET:
     case TYPE_TRANSPARENCY:
@@ -228,8 +227,6 @@ void BsdfProperty::buildBsdfPage()
         bsdf->setName(_value->name());
         if (hasAlbedo(_type) && hasAlbedo(type))
             bsdf->setAlbedo(_value->albedo());
-        bsdf->setIntMedium(_value->intMedium());
-        bsdf->setExtMedium(_value->extMedium());
         if (_setter(bsdf)) {
             for (auto &p : _scene->primitives())
                 for (int i = 0; i < p->numBsdfs(); ++i)
@@ -259,18 +256,6 @@ void BsdfProperty::buildBsdfPage()
         buildBsdfList();
         return true;
     });
-    if (!_nested) {
-        sheet->addMediumProperty(_value->intMedium(), "Interior medium", _scene, [this](std::shared_ptr<Medium> &m) {
-            _value->setIntMedium(m);
-            updateBsdfDisplay();
-            return true;
-        });
-        sheet->addMediumProperty(_value->extMedium(), "Exterior medium", _scene, [this](std::shared_ptr<Medium> &m) {
-            _value->setIntMedium(m);
-            updateBsdfDisplay();
-            return true;
-        });
-    }
     if (hasAlbedo(_type)) {
         sheet->addTextureProperty(_value->albedo(), "Albedo", false, _scene, TexelConversion::REQUEST_RGB,
             [this](std::shared_ptr<Texture> &t) {
@@ -279,6 +264,12 @@ void BsdfProperty::buildBsdfPage()
                 return true;
         });
     }
+    sheet->addTextureProperty(_value->bump(), "Bump map", true, _scene, TexelConversion::REQUEST_AVERAGE,
+        [this](std::shared_ptr<Texture> &bump) {
+            _value->setBump(bump);
+            updateBsdfDisplay();
+            return true;
+    });
 
     buildBsdfPage(sheet);
 
@@ -587,11 +578,11 @@ void BsdfProperty::buildBsdfPage(PropertySheet *sheet, ThinSheetBsdf *bsdf)
     });
 }
 
-void BsdfProperty::buildBsdfPage(PropertySheet */*sheet*/, ForwardBsdf */*bsdf*/)
+void BsdfProperty::buildBsdfPage(PropertySheet * /*sheet*/, ForwardBsdf * /*bsdf*/)
 {
 }
 
-void BsdfProperty::buildBsdfPage(PropertySheet */*sheet*/, LambertBsdf */*bsdf*/)
+void BsdfProperty::buildBsdfPage(PropertySheet * /*sheet*/, LambertBsdf * /*bsdf*/)
 {
 }
 
@@ -614,11 +605,11 @@ void BsdfProperty::buildBsdfPage(PropertySheet *sheet, PlasticBsdf *bsdf)
     });
 }
 
-void BsdfProperty::buildBsdfPage(PropertySheet */*sheet*/, MirrorBsdf */*bsdf*/)
+void BsdfProperty::buildBsdfPage(PropertySheet * /*sheet*/, MirrorBsdf * /*bsdf*/)
 {
 }
 
-void BsdfProperty::buildBsdfPage(PropertySheet */*sheet*/, ErrorBsdf */*bsdf*/)
+void BsdfProperty::buildBsdfPage(PropertySheet * /*sheet*/, ErrorBsdf * /*bsdf*/)
 {
 }
 
@@ -660,7 +651,7 @@ void BsdfProperty::buildBsdfPage(PropertySheet *sheet, PhongBsdf *bsdf)
     });
 }
 
-void BsdfProperty::buildBsdfPage(PropertySheet */*sheet*/, NullBsdf */*bsdf*/)
+void BsdfProperty::buildBsdfPage(PropertySheet * /*sheet*/, NullBsdf * /*bsdf*/)
 {
 }
 

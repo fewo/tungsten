@@ -19,9 +19,7 @@
 
 namespace Tungsten {
 
-CONSTEXPR float PreviewWindow::Fov;
-CONSTEXPR float PreviewWindow::Near;
-CONSTEXPR float PreviewWindow::Far;
+static const std::array<MouseConsumers, 3> DefaultPriorities{{GizmoConsumer, CameraConsumer, SelectionConsumer}};
 
 using namespace GL;
 
@@ -34,14 +32,18 @@ GlMesh::GlMesh(const TriangleMesh &src)
 
     _vertexBuffer.bind();
     VboVertex *verts = _vertexBuffer.map<VboVertex>();
-    for (const Vertex &v : src.verts())
-        *(verts++) = VboVertex{v.pos(), v.normal(), v.uv()};
+    for (const Vertex &v : src.verts()) {
+        VboVertex vert = {v.pos(), v.normal(), v.uv()};
+        *(verts++) = vert;
+    }
     _vertexBuffer.unmap();
 
     _indexBuffer.bind();
     VboTriangle *tris = _indexBuffer.map<VboTriangle>();
-    for (const TriangleI &t : src.tris())
-        *(tris++) = VboTriangle{t.v0, t.v1, t.v2};
+    for (const TriangleI &t : src.tris()) {
+        VboTriangle tri = {t.v0, t.v1, t.v2};
+        *(tris++) = tri;
+    }
     _indexBuffer.unmap();
 }
 
@@ -459,7 +461,7 @@ void PreviewWindow::addModel()
         nullptr,
         "Open file...",
         QString::fromStdString(dir.absolute().asString()),
-        "Mesh files (*.obj;*.json)"
+        "Mesh files (*.obj *.json)"
     );
 
     if (!file.isEmpty()) {

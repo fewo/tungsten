@@ -215,6 +215,7 @@ int TraceableMinecraftMap::fetchBsdf(ResourcePackLoader &pack, const TexturedQua
 
     _materials.emplace_back();
     QuadMaterial &material = _materials.back();
+    material.bsdf = _missingBsdf;
 
     bool isEmissive = pack.isEmissive(quad.texture);
 
@@ -613,7 +614,7 @@ void TraceableMinecraftMap::loadResources()
 
                 _bounds.grow(bounds);
 
-                prims.emplace_back(bounds, centroid, _grids.size());
+                prims.emplace_back(bounds, centroid, int(_grids.size()));
 
                 buildBiomeColors(pack, x, z, biomes);
 
@@ -692,27 +693,11 @@ bool TraceableMinecraftMap::tangentSpace(const IntersectionTemporary &/*data*/, 
 
 bool TraceableMinecraftMap::isSamplable() const
 {
-    return true;
-}
-
-void TraceableMinecraftMap::makeSamplable(uint32 /*threadIndex*/)
-{
-}
-
-float TraceableMinecraftMap::inboundPdf(uint32 /*threadIndex*/, const IntersectionTemporary &/*data*/,
-        const IntersectionInfo &/*info*/, const Vec3f &/*p*/, const Vec3f &/*d*/) const
-{
-    return 0.0f;
-}
-
-bool TraceableMinecraftMap::sampleInboundDirection(uint32 /*threadIndex*/, LightSample &/*sample*/) const
-{
     return false;
 }
 
-bool TraceableMinecraftMap::sampleOutboundDirection(uint32 /*threadIndex*/, LightSample &/*sample*/) const
+void TraceableMinecraftMap::makeSamplable(const TraceableScene &/*scene*/, uint32 /*threadIndex*/)
 {
-    return false;
 }
 
 bool TraceableMinecraftMap::invertParametrization(Vec2f /*uv*/, Vec3f &/*pos*/) const
@@ -720,7 +705,7 @@ bool TraceableMinecraftMap::invertParametrization(Vec2f /*uv*/, Vec3f &/*pos*/) 
     return false;
 }
 
-bool TraceableMinecraftMap::isDelta() const
+bool TraceableMinecraftMap::isDirac() const
 {
     return false;
 }

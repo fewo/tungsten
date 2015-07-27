@@ -1,6 +1,9 @@
 #ifndef JSONXMLCONVERTER_HPP_
 #define JSONXMLCONVERTER_HPP_
 
+#include "phasefunctions/HenyeyGreensteinPhaseFunction.hpp"
+#include "phasefunctions/RayleighPhaseFunction.hpp"
+
 #include "primitives/InfiniteSphere.hpp"
 #include "primitives/TriangleMesh.hpp"
 #include "primitives/Sphere.hpp"
@@ -241,17 +244,14 @@ class SceneXmlWriter
         else
             DBG("Unknown medium type!");
 
-        switch(med->phaseFunctionType()) {
-        case PhaseFunction::Isotropic:
-            break;
-        case PhaseFunction::HenyeyGreenstein:
+        const PhaseFunction *phase = med->phaseFunction(Vec3f(0.0f));
+        if (const HenyeyGreensteinPhaseFunction *hg = dynamic_cast<const HenyeyGreensteinPhaseFunction *>(phase)) {
             begin("phase");
             assign("type", "hg");
             beginPost();
-            convert("g", med->phaseG());
+            convert("g", hg->g());
             end();
-            break;
-        case PhaseFunction::Rayleigh:
+        } else if (dynamic_cast<const RayleighPhaseFunction *>(phase)) {
             begin("phase");
             assign("type", "rayleigh");
             endInline();
@@ -442,6 +442,14 @@ class SceneXmlWriter
 
     void convert(Bsdf *bsdf)
     {
+        bool hasBump = bsdf->bump() && !bsdf->bump()->isConstant();
+        if (hasBump) {
+            begin("bsdf");
+            assign("type", "bumpmap");
+            beginPost();
+            convert("map", bsdf->bump().get());
+        }
+
         if (LambertBsdf *bsdf2 = dynamic_cast<LambertBsdf *>(bsdf))
             convert(bsdf2);
         else if (PhongBsdf *bsdf2 = dynamic_cast<PhongBsdf *>(bsdf))
@@ -473,6 +481,9 @@ class SceneXmlWriter
         else if (dynamic_cast<ForwardBsdf *>(bsdf)) {
         } else
             DBG("Unknown bsdf type with name '%s'!", bsdf->name());
+
+        if (hasBump)
+            end();
     }
 
     void convert(PinholeCamera *cam)
@@ -609,25 +620,15 @@ class SceneXmlWriter
         } else
             DBG("Unknown primitive type!");
 
-        if (!dynamic_cast<ForwardBsdf *>(prim->bsdf(0).get())) {
-            bool hasBump = prim->bump() && !prim->bump()->isConstant();
-            if (hasBump) {
-                begin("bsdf");
-                assign("type", "bumpmap");
-                beginPost();
-                convert("map", prim->bump().get());
-            }
+        if (!dynamic_cast<ForwardBsdf *>(prim->bsdf(0).get()))
             convertOrRef(prim->bsdf(0).get());
-            if (hasBump)
-                end();
+        if (prim->intMedium()) {
+            prim->intMedium()->setName("interior");
+            convert(prim->intMedium().get());
         }
-        if (prim->bsdf(0)->intMedium()) {
-            prim->bsdf(0)->intMedium()->setName("interior");
-            convert(prim->bsdf(0)->intMedium().get());
-        }
-        if (prim->bsdf(0)->extMedium()) {
-            prim->bsdf(0)->extMedium()->setName("exterior");
-            convert(prim->bsdf(0)->extMedium().get());
+        if (prim->extMedium()) {
+            prim->extMedium()->setName("exterior");
+            convert(prim->extMedium().get());
         }
         if (prim->isEmissive()) {
             begin("emitter");

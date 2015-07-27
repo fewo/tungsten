@@ -2,7 +2,14 @@
 #define CAMERA_HPP_
 
 #include "ReconstructionFilter.hpp"
+#include "AtomicFramebuffer.hpp"
 #include "Tonemap.hpp"
+
+#include "samplerecords/DirectionSample.hpp"
+#include "samplerecords/PositionSample.hpp"
+#include "samplerecords/LensSample.hpp"
+
+#include "sampling/PathSampleGenerator.hpp"
 
 #include "math/Mat4f.hpp"
 #include "math/Vec.hpp"
@@ -45,6 +52,10 @@ protected:
     std::vector<Vec3d> _pixels;
     std::vector<uint32> _weights;
 
+    std::unique_ptr<AtomicFramebuffer> _splatBuffer;
+    std::vector<Vec3d> _splats;
+    uint64 _splatWeight;
+
 private:
     void precompute();
 
@@ -55,12 +66,24 @@ public:
     void fromJson(const rapidjson::Value &v, const Scene &scene) override;
     virtual rapidjson::Value toJson(Allocator &allocator) const override;
 
-    virtual bool generateSample(Vec2u pixel, SampleGenerator &sampler, Vec3f &throughput, Ray &ray) const = 0;
-    virtual Mat4f approximateProjectionMatrix(int width, int height) const = 0;
+    virtual bool samplePosition(PathSampleGenerator &sampler, PositionSample &sample) const;
+    virtual bool sampleDirection(PathSampleGenerator &sampler, const PositionSample &point, DirectionSample &sample) const;
+    virtual bool sampleDirection(PathSampleGenerator &sampler, const PositionSample &point, Vec2u pixel,
+            DirectionSample &sample) const;
+    virtual bool sampleDirect(const Vec3f &p, PathSampleGenerator &sampler, LensSample &sample) const;
+    virtual bool evalDirection(PathSampleGenerator &sampler, const PositionSample &point,
+            const DirectionSample &direction, Vec3f &weight, Vec2f &pixel) const;
+    virtual float directionPdf(const PositionSample &point, const DirectionSample &direction) const;
+
+    virtual bool isDirac() const = 0;
+
     virtual float approximateFov() const = 0;
 
     virtual void prepareForRender();
     virtual void teardownAfterRender();
+
+    void requestSplatBuffer();
+    void blitSplatBuffer(uint64 numSplats);
 
     void setTransform(const Vec3f &pos, const Vec3f &lookAt, const Vec3f &up);
     void setPos(const Vec3f &pos);
@@ -74,21 +97,23 @@ public:
         _weights[idx] += weight;
     }
 
-    Vec3f tonemap(const Vec3f &c) const
+    inline Vec3f tonemap(const Vec3f &c) const
     {
         return Tonemap::tonemap(_tonemapOp, max(c, Vec3f(0.0f)));
     }
 
-    Vec3f getLinear(int x, int y) const
+    inline Vec3f getLinear(int x, int y) const
     {
         int idx = x + y*_res.x();
-        return Vec3f(_pixels[idx]/_weights[idx]);
+        Vec3d result = _pixels[idx]/double(max(_weights[idx], uint32(1)));
+        if (!_splats.empty())
+            result += _splats[idx]/double(max(_splatWeight, uint64(1)));
+        return Vec3f(result);
     }
 
-    Vec3f get(int x, int y) const
+    inline Vec3f get(int x, int y) const
     {
-        int idx = x + y*_res.x();
-        return tonemap(Vec3f(_pixels[idx]/_weights[idx]));
+        return tonemap(getLinear(x, y));
     }
 
     const Mat4f &transform() const
@@ -139,6 +164,16 @@ public:
     std::vector<uint32> &weights()
     {
         return _weights;
+    }
+
+    AtomicFramebuffer *splatBuffer()
+    {
+        return _splatBuffer.get();
+    }
+
+    bool isFilterDirac() const
+    {
+        return _filter.isDirac();
     }
 
     void setTonemapString(const std::string &name)

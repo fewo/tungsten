@@ -6,7 +6,7 @@
 
 #include "materials/ConstantTexture.hpp"
 
-#include "sampling/SampleGenerator.hpp"
+#include "sampling/PathSampleGenerator.hpp"
 #include "sampling/SampleWarp.hpp"
 
 #include "math/MathUtil.hpp"
@@ -73,7 +73,7 @@ bool RoughPlasticBsdf::sample(SurfaceScatterEvent &event) const
     float specularWeight = Fi;
     float specularProbability = specularWeight/(specularWeight + substrateWeight);
 
-    if (sampleR && (event.sampler->next1D() < specularProbability || !sampleT)) {
+    if (sampleR && (event.sampler->nextBoolean(DiscreteBsdfSample, specularProbability) || !sampleT)) {
         float roughness = (*_roughness)[*event.info].x();
         if (!RoughDielectricBsdf::sampleBase(event, true, false, roughness, _ior, _distribution))
             return false;
@@ -82,33 +82,33 @@ bool RoughPlasticBsdf::sample(SurfaceScatterEvent &event) const
             float Fo = Fresnel::dielectricReflectance(eta, event.wo.z());
 
             Vec3f brdfSubstrate = ((1.0f - Fi)*(1.0f - Fo)*eta*eta)*(diffuseAlbedo/(1.0f - diffuseAlbedo*_diffuseFresnel))*INV_PI*event.wo.z();
-            Vec3f brdfSpecular = event.throughput*event.pdf;
+            Vec3f brdfSpecular = event.weight*event.pdf;
             float pdfSubstrate = SampleWarp::cosineHemispherePdf(event.wo)*(1.0f - specularProbability);
             float pdfSpecular = event.pdf*specularProbability;
 
-            event.throughput = (brdfSpecular + brdfSubstrate)/(pdfSpecular + pdfSubstrate);
+            event.weight = (brdfSpecular + brdfSubstrate)/(pdfSpecular + pdfSubstrate);
             event.pdf = pdfSpecular + pdfSubstrate;
         }
         return true;
     } else {
-        Vec3f wo(SampleWarp::cosineHemisphere(event.sampler->next2D()));
+        Vec3f wo(SampleWarp::cosineHemisphere(event.sampler->next2D(BsdfSample)));
         float Fo = Fresnel::dielectricReflectance(eta, wo.z());
         Vec3f diffuseAlbedo = albedo(event.info);
 
         event.wo = wo;
-        event.throughput = ((1.0f - Fi)*(1.0f - Fo)*eta*eta)*(diffuseAlbedo/(1.0f - diffuseAlbedo*_diffuseFresnel));
+        event.weight = ((1.0f - Fi)*(1.0f - Fo)*eta*eta)*(diffuseAlbedo/(1.0f - diffuseAlbedo*_diffuseFresnel));
         if (_scaledSigmaA.max() > 0.0f)
-            event.throughput *= std::exp(_scaledSigmaA*(-1.0f/event.wo.z() - 1.0f/event.wi.z()));
+            event.weight *= std::exp(_scaledSigmaA*(-1.0f/event.wo.z() - 1.0f/event.wi.z()));
 
         event.pdf = SampleWarp::cosineHemispherePdf(event.wo);
         if (sampleR) {
-            Vec3f brdfSubstrate = event.throughput*event.pdf;
+            Vec3f brdfSubstrate = event.weight*event.pdf;
             float  pdfSubstrate = event.pdf*(1.0f - specularProbability);
             Vec3f brdfSpecular = RoughDielectricBsdf::evalBase(event, true, false, (*_roughness)[*event.info].x(), _ior, _distribution);
             float pdfSpecular  = RoughDielectricBsdf::pdfBase(event, true, false, (*_roughness)[*event.info].x(), _ior, _distribution);
             pdfSpecular *= specularProbability;
 
-            event.throughput = (brdfSpecular + brdfSubstrate)/(pdfSpecular + pdfSubstrate);
+            event.weight = (brdfSpecular + brdfSubstrate)/(pdfSpecular + pdfSubstrate);
             event.pdf = pdfSpecular + pdfSubstrate;
         }
         event.sampledLobe = BsdfLobes::DiffuseReflectionLobe;
